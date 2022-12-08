@@ -308,8 +308,10 @@ def get_dataset_file_paths(path, deploy=False):
     key_paths = []
 
     sub_dir = os.walk(path)
-    for directory in sub_dir:
-        paths.append(directory[0])
+    for potential_dir in sub_dir:
+        # check if it is a directory
+        if os.path.isdir(potential_dir[0]):
+            paths.append(potential_dir[0])
 
     paths = set(paths)
     for path in paths:
@@ -320,7 +322,7 @@ def get_dataset_file_paths(path, deploy=False):
             continue
 
         for file in files:
-            key_file = file[:-9] + ".json"
+            key_file = file.replace("-heap.raw", ".json")
             if os.path.exists(key_file) and deploy is False:
                 file_paths.append(file)
                 key_paths.append(key_file)
@@ -594,4 +596,10 @@ def load_models(load_high_recall_only=False):
 
     clf = WrappedClassifier(resampled_classifier=resampled_clf, classifier=rf, final_stage_classifier=final_clf)
     return clf
+
+def check_path_exists(path: str):
+    if not os.path.exists(path):
+        print('WARNING: Path does not exist: %s' % path)
+        return False
+    return True
 
