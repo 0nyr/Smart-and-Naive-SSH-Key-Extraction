@@ -5,54 +5,11 @@ package main
 
 import (
 	"flag"
-	"fmt"
-	"log"
-	"os"
+	"phdtrack/custom_log"
 
 	_ "github.com/google/gopacket"
 	_ "github.com/google/gopacket/pcap"
 )
-
-// global variables
-var (
-	// 0: unimportant messages
-	// 1: important messages (debug)
-	// 2: debug messages (warnings)
-	// 3: trace messages (erros and panics)
-	verboseLevel = 0 // verbosity level. 0 is the lowest (all messages), 3 is the highest (errors).
-)
-
-// Custom Logging function.
-// logLevel is the level of verbosity. 0 is the lowest (no message), 3 is the highest.
-func customLog(
-	logLevel int,
-	message string,
-) {
-	if logLevel >= verboseLevel {
-		if logLevel >= 2 {
-			fmt.Fprintln(os.Stderr, message)
-		}
-		log.Default().Println(message)
-	}
-}
-
-func cLog(message string) {
-	customLog(0, message)
-}
-
-func cDebug(message string) {
-	customLog(1, message)
-}
-
-func cWarn(message string) {
-	message = "WARNING: " + message
-	customLog(2, message)
-}
-
-func cErr(message string) {
-	message = "ERROR: " + message
-	customLog(3, message)
-}
 
 func main() {
 
@@ -62,11 +19,10 @@ func main() {
 	flag.Parse()
 
 	// overwrite global variables with flags
-	verboseLevel = *verboseLevelFlag
+	custom_log.verboseLevel = *verboseLevelFlag
 
-	customLog(0, "Finished single decrypt")
-	cErr("This is an error")
-	cWarn("This is a warning")
-	cDebug("This is a debug message")
-
+	custom_log.customLog(0, "Finished single decrypt")
+	custom_log.cErr("This is an error")
+	custom_log.cWarn("This is a warning")
+	custom_log.cDebug("This is a debug message")
 }
