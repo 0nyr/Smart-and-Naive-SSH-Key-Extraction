@@ -1,25 +1,60 @@
 """
-File that contains all commonly used functions
+File that contains all commonly used functions.
 """
+
 import numpy as np
 import os
+import io
 import json
 from datetime import datetime
-global file_names
-global fptr
 from timeit import default_timer as timer
+from sklearn.ensemble import RandomForestClassifier
+from dataclasses import dataclass
+from enum import Enum
 
-ROOT = "../Smart-VMI/data/new"
-VALIDATION_PATH = "../Smart-VMI/data/validation"
-MODEL_PATH = "./models"
-LOG_PATH = "./logs"
+ROOT_DIR_PATH = "../Smart-VMI/data/new" # TODO: ??? remove
+VALIDATION_DIR_PATH = os.environ["HOME"] + "/Documents/code/phdtrack/phdtrack_data/Validation"
+
+MODEL_DIR_PATH = "./models"
+LOG_DIR_PATH = "./logs"
 RESULTS_PATH = "./results"
 TYPES = ["client-side", "dropbear", "OpenSSH", "port-forwarding", "scp", "normal-shell"]
-LENGTHS = [16, 24, 32, 64]
 
+LENGTHS = [16, 24, 32, 64]
+WINDOW_SIZE = 128
+KEY_SIZE = 64
+
+@dataclass
+class ConfigParameter:
+    file_names: list[str]
+    log_file: io.TextIOWrapper
+
+    def __init__(self):
+        self.file_names = []
+
+        # log file
+        if not os.path.exists(LOG_DIR_PATH):
+            # Create the directory if it is not present
+            os.makedirs(LOG_DIR_PATH)
+        
+        log_file_path = os.path.join(
+            LOG_DIR_PATH, 
+            "Output_" + str(datetime.now()) + ".txt"
+        )
+        self.log_file = open(log_file_path, "w")
+    
+    def __del__(self):
+        """
+        Destructor to close the log file
+        """
+        self.log_file.close()
 
 class WrappedClassifier:
-    def __init__(self, resampled_classifier, classifier, final_stage_classifier):
+    def __init__(self, 
+        resampled_classifier: RandomForestClassifier, 
+        classifier: RandomForestClassifier, 
+        final_stage_classifier: RandomForestClassifier
+    ):
         self.resampled_classifier = resampled_classifier
         self.classifier = classifier
         self.final_stage = final_stage_classifier
@@ -36,145 +71,202 @@ class WrappedClassifier:
         return self.classifier, self.resampled_classifier, self.final_stage
 
 
-def init():
-    global file_names
-    global fptr
-    file_names = []
-    fptr = None
+PARAMS = ConfigParameter()
 
-
-def close():
-    global fptr
-    if fptr is not None:
-        fptr.close()
-        fptr = None
-
-
-def print_(print_str):
-    global fptr
-    if fptr is None:
-        # Create the directory if it is not present
-        if os.path.exists(LOG_PATH) is False:
-            os.makedirs(LOG_PATH)
-        path = os.path.join(LOG_PATH, "Output_" + str(datetime.now()) + ".txt")
-        fptr = open(path, "w")
-
-    fptr.write(str(datetime.now()) + ":\t" + print_str + "\n")
+def log(print_str):
+    """
+    Print to the console and log file.
+    """
+    PARAMS.log_file.write(
+        str(datetime.now()) + ":\t" + print_str + "\n"
+    )
     print(str(datetime.now()) + ":\t" + print_str)
 
 
 def read_keys(path):
-    with open(path, "r") as fp:
-        data = fp.readlines()
+    """
+    This function reads the keys from the key file.
+
+    Structure of the key file is as follows:
+    KEY 0:
+    00000000: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+    00000010: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+    00000020: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+    KEY 1:
+    00000000: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+    00000010: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+    00000020: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+    ...
+    """
+
+    with open(path, "r") as file:
+        data: list[str] = file.readlines()
 
     # Extract upto 6 keys
-    keys = []
+    keys: list[bytearray] = []
     temp_key = bytearray()
     for row in data:
-        # Empty row
-        if len(row.strip()) == 0:
-            continue
         curr_row = row.strip()
-        if 'KEY' in curr_row:
-            # key start
-            if len(temp_key) > 0:
-                keys.append(temp_key)
-            temp_key = bytearray()
-        else:
-            curr_row = curr_row[23:].strip()
-            temp_key = temp_key + bytearray.fromhex(curr_row)
+        if len(curr_row) > 0: # not empty row
+            if 'KEY' in curr_row:
+                # key start
+                if len(temp_key) > 0:
+                    keys.append(temp_key)
+                temp_key = bytearray() # reset when changing key
+            else:
+                curr_row = curr_row[23:].strip()
+                temp_key = temp_key + bytearray.fromhex(curr_row)
 
     if len(temp_key) > 0:
         keys.append(temp_key)
     return keys
 
+class BlockType(Enum):
+    INVALID = 0 # More than one key
+    VALID = 1 # One and only one key
+    EMPTY = 2 # No key
 
-def create_dataset(folder_path, keys_path):
+@dataclass
+class BlockData:
+    dataset: bytearray
+    label: int # if VALID then 1 else EMPTY 0
+    offset: int
+    length: int
+
+def get_block_data_from_keys_in_dataset(
+    keys: list[bytearray], 
+    dataset: bytearray,
+):
     """
-    The aim is to split the raw file into multiple blocks of 128 bytes
-    If the key for the file is present in the block then that page will be labelled True else False
-    This will be an unbalanced dataset
+    This function checks if any of the keys are present in the dataset.
+    Return the block data which contains the dataset, label and offset.
+    It also specifies the type of the block depending on the number of keys in the block.
+    """
+
+    block_data = BlockData()
+    block_data.dataset = dataset
+    block_data_type = BlockType.VALID
+
+    # Check if any of the keys are present in the window
+    found: list[int] = []
+    for list_index in range(len(keys)):
+        if keys[list_index] in dataset:
+            found.append(list_index)
+        else:
+            found.append(0)
+
+    if len(found) > 0:
+        block_data.label = 1
+
+        # Find the offset of the key in the window
+        # NOTE: There can be multiple keys in the same window
+        all_offset_indexes = []
+        element = None
+        for element_index in found:
+            if element_index != 0:
+                element = keys[element_index]
+                current_offset = dataset.find(element)
+                all_offset_indexes.append(current_offset)
+
+        # If there are multiple keys in the same window 
+        # then we will ignore the sample
+        if len(all_offset_indexes) > 1:
+            print(
+                "WARN: Multiple keys detected in same "
+                "window. Ignoring sample."
+            )
+            block_data_type = BlockType.INVALID
+            block_data.label = 0
+            block_data.offset = 0
+            block_data.length = 0
+        else:
+            block_data_type = BlockType.VALID
+            block_data.offset = all_offset_indexes[0]
+            block_data.length = len(element)
+    else:
+        block_data_type = BlockType.EMPTY
+        block_data.label = 0
+        block_data.offset = 0
+        block_data.length = 0
+    
+    return block_data_type, block_data
+
+def get_data_from_keys_in_heap_dump(
+    heap_dump_file_path: str,
+    keys: list[bytearray]
+):
+    """
+    This function reads the heap dump file.
+    It creates 16 byte blocks and checks if 
+    any of the keys are present in the block.
+    NOTE: Only one key can be present in a block.
+
+    Returns: The block data.
+    """
+
+    block_datas :list[BlockData] = []
+    i = 0
+
+    with open(heap_dump_file_path, "rb") as file:
+        data = bytearray(file.read())
+        # We create 16 byte blocks
+
+        # iterate over key lengths
+        while i + WINDOW_SIZE <= len(data):
+            window_sum = sum(data[i:i+WINDOW_SIZE])
+
+            if window_sum != 0:
+                block_data_type, block_data = get_block_data_from_keys_in_dataset(
+                    keys, data[i:i+WINDOW_SIZE]
+                )
+                if block_data_type is not BlockType.INVALID:
+                    block_datas.append(block_data)
+            
+            i += KEY_SIZE
+        
+        # Check if there is any data left
+        window_sum = sum(data[-WINDOW_SIZE:])
+        # take into account the last bytes of the file
+        if i < len(data) and window_sum > 0:
+            block_data_type, block_data = get_block_data_from_keys_in_dataset(
+                keys, data[-WINDOW_SIZE:]
+            )
+            if block_data_type is not BlockType.INVALID:
+                block_datas.append(block_data)
+
+    return block_data
+
+def create_dataset(heap_dump_dir_path, keys_path):
+    """
+    The aim is to split the raw file into multiple blocks of 128 bytes.
+    If the key for the file is present in the block then that page will be labelled True else False.
+    This will be an unbalanced dataset.
+
     :param folder_path: path of the heap dump files
     :param keys_path: path to the folder containing the corresponding keys of dumps
     :return:
     """
+    file_paths = os.listdir(heap_dump_dir_path)
+    all_block_datas: list[BlockData] = []
 
-    global file_names
+    for file_path in file_paths:
 
-    window_size = 128
-    key_size = 64
-
-    files = os.listdir(folder_path)
-    dataset = []
-    labels = []
-    offsets = []
-    lengths = []
-    for idx, file in enumerate(files):
-
-        if file in file_names:
-            print('ERROR: VALIDATION FILE OVERLAPS WITH TRAINING DATASET. \n %s' % file)
+        if file_path in PARAMS.file_names:
+            print('WARNING: VALIDATION FILE OVERLAPS WITH TRAINING DATASET. \n %s' % file_path)
             continue
 
-        file_names.append(file)
+        PARAMS.file_names.append(file_path)
 
-        path = os.path.join(folder_path, file)
-        key_path = os.path.join(keys_path, file[:-9] + '-key.log')
-        curr_keys = read_keys(key_path)
-        with open(path, "rb") as fp:
-            data = fp.read()
-            data = bytearray(data)
-            idx = 0
-            # We create 16 byte blocks
-            while idx + window_size <= len(data):
-                window_sum = sum(data[idx:idx+window_size])
-                if window_sum == 0:
-                    idx += key_size
-                    continue
-                dataset.append(data[idx:idx+window_size])
+        heap_dump_file_path = os.path.join(heap_dump_dir_path, file_path)
+        key_path = os.path.join(keys_path, file_path[:-9] + '-key.log')
+        keys_in_file = read_keys(key_path)
+        
+        file_block_datas = get_data_from_keys_in_heap_dump(
+            heap_dump_file_path, keys_in_file
+        )
+        all_block_datas.extend(file_block_datas)
 
-                found = [l_idx if curr_keys[l_idx] in data[idx:idx+window_size]
-                         else 0 for l_idx in range(len(curr_keys))]
-                if any(found) is True:
-                    labels.append(1)
-                    offset = [data[idx:idx + window_size].find(curr_keys[element]) for element in found if element != 0]
-                    curr_lengths = [len(curr_keys[element]) for element in found if element != 0]
-                    if len(offset) > 1:
-                        print("Multiple keys detected in same window")
-                    else:
-                        offsets.append(offset[0])
-                        lengths.append(curr_lengths[0])
-                else:
-                    labels.append(0)
-                    offsets.append(0)
-                    lengths.append(0)
-
-                if len(labels) != len(offsets):
-                    print("Hello")
-                idx += key_size
-
-        window_sum = sum(data[-window_size:])
-        if idx < len(data) and window_sum > 0:
-
-            dataset.append(data[-window_size:])
-            found = [l_idx if curr_keys[l_idx] in data[idx:idx + window_size]
-                     else 0 for l_idx in range(len(curr_keys))]
-
-            if any(found) is True:
-                labels.append(1)
-                offset = [data[idx:idx + window_size].find(curr_keys[element]) for element in found if element != 0]
-                offsets.append(offset[0])
-
-                curr_lengths = [len(curr_keys[element]) for element in found if element != 0]
-                lengths.append(curr_lengths[0])
-
-                assert(len(offsets) == 1)
-
-            else:
-                labels.append(0)
-                offsets.append(0)
-                lengths.append(0)
-
-    return dataset, labels, offsets, lengths
+    return all_block_datas
 
 
 def read_files(paths, key_paths, model=None, window_size=128, key_size=64, root_dir=None, oversample=False):
@@ -194,7 +286,7 @@ def read_files(paths, key_paths, model=None, window_size=128, key_size=64, root_
     offsets = []
 
     if root_dir is None:
-        base_path_length = len(ROOT) + 1
+        base_path_length = len(ROOT_DIR_PATH) + 1
     else:
         base_path_length = len(root_dir) + 1
 
@@ -331,7 +423,7 @@ def get_dataset_file_paths(path, deploy=False):
                 file_paths.append(file)
 
             else:
-                print_("Corresponding Key file does not exist for :%s" % file)
+                log("Corresponding Key file does not exist for :%s" % file)
 
     return file_paths, key_paths
 
@@ -371,7 +463,7 @@ def test(clf, file_paths, key_paths, window_size=128, model=None, root_dir=None)
     y_pred = []
 
     if root_dir is None:
-        base_path_length = len(ROOT) + 1
+        base_path_length = len(ROOT_DIR_PATH) + 1
     else:
         base_path_length = len(root_dir) + 1
 
@@ -418,11 +510,11 @@ def test(clf, file_paths, key_paths, window_size=128, model=None, root_dir=None)
 
 def print_metrics(y_test, y_pred):
     acc, pr, recall, f1, cm = get_metrics(y_true=y_test, y_pred=y_pred, return_cm=True)
-    print_("Accuracy: %f" % acc)
-    print_("Precision: %f" % pr)
-    print_("Recall: %f" % recall)
-    print_("F1-Measure: %f" % f1)
-    print_("\nConfusion Matrix:\n" + str(cm))
+    log("Accuracy: %f" % acc)
+    log("Precision: %f" % pr)
+    log("Recall: %f" % recall)
+    log("F1-Measure: %f" % f1)
+    log("\nConfusion Matrix:\n" + str(cm))
 
 
 def get_splits(path, val_per=0.15, test_per=0.15, random_state=42):
@@ -432,26 +524,30 @@ def get_splits(path, val_per=0.15, test_per=0.15, random_state=42):
     start = timer()
     file_paths, key_paths = get_dataset_file_paths(path)
     end = timer()
-    print_('Time taken for finding all files: %f' % (end - start))
+    log('Time taken for finding all files: %f' % (end - start))
 
     start = timer()
     train_files, val_files, train_keys, val_keys, = \
         train_test_split(file_paths, key_paths, test_size=test_per, random_state=random_state)
     end = timer()
-    print_('Time taken for splitting: %f' % (end - start))
+    log('Time taken for splitting: %f' % (end - start))
 
     start = timer()
     train_files, test_files, train_keys, test_keys, = \
         train_test_split(train_files, train_keys, test_size=val_per, random_state=random_state)
     end = timer()
-    print_('Time taken for secondary splitting: %f' % (end - start))
+    log('Time taken for secondary splitting: %f' % (end - start))
 
     return train_files, train_keys, test_files, test_keys, val_files, val_keys
 
 
-def train_classifier(dataset, labels, test_paths=[], test_keys=[], retrain_rf=False, retrain_resampled=False,
+def train_classifier(
+    dataset, labels, test_paths=[], test_keys=[], retrain_rf=False, retrain_resampled=False,
                      retrain_final=False):
     """
+    Trains the classifier and returns the wrapped classifier.
+    Can also be used to retrain the classifier.
+    Can also reload the classifier from disk.
 
     :param dataset: Paths of files to be trained
     :param labels:  The corresponding keys
@@ -469,13 +565,13 @@ def train_classifier(dataset, labels, test_paths=[], test_keys=[], retrain_rf=Fa
     from imblearn.over_sampling import SMOTE
     from sklearn.ensemble import RandomForestClassifier
 
-    path = os.path.join(MODEL_PATH, 'rf.pkl')
+    path = os.path.join(MODEL_DIR_PATH, 'rf.pkl')
     if retrain_rf is True or not os.path.exists(path):
         start = time.time()
         rf = RandomForestClassifier(n_estimators=5)
         rf.fit(X=dataset, y=labels)
         end = time.time()
-        print_('Time taken for training the classifier: %f' % (end - start))
+        log('Time taken for training the classifier: %f' % (end - start))
 
         with open(path, 'wb') as fp:
             pickle.dump(rf, fp)
@@ -484,21 +580,21 @@ def train_classifier(dataset, labels, test_paths=[], test_keys=[], retrain_rf=Fa
         with open(path, 'rb') as fp:
             rf = pickle.load(fp)
 
-    path = os.path.join(MODEL_PATH, 'resampled_clf.pkl')
+    path = os.path.join(MODEL_DIR_PATH, 'resampled_clf.pkl')
     if retrain_resampled is True or not os.path.exists(path):
         # Use SMOTE oversampling
         start = time.time()
         sm = SMOTE()
         x_train, y_train = sm.fit_resample(dataset, labels)
         end = time.time()
-        print_('Time taken for resampling: %f' % (end - start))
+        log('Time taken for resampling: %f' % (end - start))
 
         #  clf.partial_fit(X=np.array(dataset).astype(int), y=labels, classes=classes)
         start = time.time()
         resampled_clf = RandomForestClassifier(n_estimators=5)
         resampled_clf.fit(X=np.array(x_train), y=y_train)
         end = time.time()
-        print_('Time taken for training the classifier on resampled data: %f' % (end - start))
+        log('Time taken for training the classifier on resampled data: %f' % (end - start))
 
         # Clear memory of x_train and y_train
         x_train = None
@@ -511,19 +607,19 @@ def train_classifier(dataset, labels, test_paths=[], test_keys=[], retrain_rf=Fa
         with open(path, 'rb') as fp:
             resampled_clf = pickle.load(fp)
 
-    path = os.path.join(MODEL_PATH, 'secondary_clf.pkl')
+    path = os.path.join(MODEL_DIR_PATH, 'secondary_clf.pkl')
     if retrain_final is True or not os.path.exists(path=path):
 
         # Predict probabilities to generate modified training vectors
         start = time.time()
         resampled_predicted = resampled_clf.predict_proba(dataset)
         end = time.time()
-        print_('Time taken for predicting on the resampled classifier: %f' % (end - start))
+        log('Time taken for predicting on the resampled classifier: %f' % (end - start))
 
         start = time.time()
         non_resampled_predicted = rf.predict_proba(dataset)
         end = time.time()
-        print_('Time taken for predicting on the random forest classifier: %f' % (end - start))
+        log('Time taken for predicting on the random forest classifier: %f' % (end - start))
 
         # Stack the probabilities together
         combined_dataset = np.hstack((resampled_predicted, non_resampled_predicted))
@@ -533,10 +629,10 @@ def train_classifier(dataset, labels, test_paths=[], test_keys=[], retrain_rf=Fa
         final_clf = RandomForestClassifier(n_estimators=3)
         final_clf.fit(X=np.array(combined_dataset), y=labels)
         end = time.time()
-        print_('Time taken for training the final classifier: %f' % (end - start))
+        log('Time taken for training the final classifier: %f' % (end - start))
 
         # Save the model to the disk
-        path = os.path.join(MODEL_PATH, 'secondary_clf.pkl')
+        path = os.path.join(MODEL_DIR_PATH, 'secondary_clf.pkl')
         with open(path, 'wb') as fp:
             pickle.dump(final_clf, fp)
 
@@ -553,16 +649,16 @@ def train_classifier(dataset, labels, test_paths=[], test_keys=[], retrain_rf=Fa
     start = time.time()
     y_test, y_pred, df = test(clf=clf, file_paths=test_paths, key_paths=test_keys)
     end = time.time()
-    print_('Time taken for reading and testing: %f' % (end - start))
+    log('Time taken for reading and testing: %f' % (end - start))
 
     path = os.path.join(RESULTS_PATH, "Test_Results_" + str(datetime.now()) + ".csv")
     df.to_csv(path)
 
     start = time.time()
-    print_('METRICS OF TEST SET')
+    log('METRICS OF TEST SET')
     print_metrics(y_test=y_test, y_pred=y_pred)
     end = time.time()
-    print_('Time taken for computing metrics: %f' % (end - start))
+    log('Time taken for computing metrics: %f' % (end - start))
 
     return clf
 
@@ -571,28 +667,28 @@ def load_models(load_high_recall_only=False):
     import time
     import pickle
     start = timer()
-    path = os.path.join(MODEL_PATH, 'resampled_clf_entropy.pkl')
+    path = os.path.join(MODEL_DIR_PATH, 'resampled_clf_entropy.pkl')
     with open(path, 'rb') as fp:
         resampled_clf = pickle.load(fp)
     end = timer()
-    print_('Time taken for loading high recall classifier: %f' % (end - start))
+    log('Time taken for loading high recall classifier: %f' % (end - start))
 
     if load_high_recall_only is True:
         return resampled_clf
     
     start = timer()
-    path = os.path.join(MODEL_PATH, 'rf_entropy.pkl')
+    path = os.path.join(MODEL_DIR_PATH, 'rf_entropy.pkl')
     with open(path, 'rb') as fp:
         rf = pickle.load(fp)
     end = timer()
-    print_('Time taken for loading high precision classifier: %f' % (end - start))
+    log('Time taken for loading high precision classifier: %f' % (end - start))
 
     start = timer()
-    path = os.path.join(MODEL_PATH, 'secondary_clf_entropy.pkl')
+    path = os.path.join(MODEL_DIR_PATH, 'secondary_clf_entropy.pkl')
     with open(path, 'rb') as fp:
         final_clf = pickle.load(fp)
     end = timer()
-    print_('Time taken for loading secondary classifier: %f' % (end - start))
+    log('Time taken for loading secondary classifier: %f' % (end - start))
 
     clf = WrappedClassifier(resampled_classifier=resampled_clf, classifier=rf, final_stage_classifier=final_clf)
     return clf
