@@ -509,6 +509,10 @@ def test(clf, file_paths, key_paths, window_size=128, model=None, root_dir=None)
 
 
 def print_metrics(y_test, y_pred):
+    """
+    Print the metrics for the given test and predicted values.
+    Metrics are Accuracy, Precision, Recall, F1-Measure and Confusion Matrix.
+    """
     acc, pr, recall, f1, cm = get_metrics(y_true=y_test, y_pred=y_pred, return_cm=True)
     log("Accuracy: %f" % acc)
     log("Precision: %f" % pr)
@@ -666,6 +670,26 @@ def train_classifier(
 def load_models(load_high_recall_only=False):
     import time
     import pickle
+
+    def __load_model_data(model_data_filename: str):
+        """
+        Load the model data from the disk
+        :return: Model data
+        """
+        start = timer()
+        path = os.path.join(MODEL_DIR_PATH, model_data_filename)
+
+        # check if the file exists
+        if os.path.exists(path) is False:
+            raise FileNotFoundError('File %s not found' % path)
+            return None
+
+        with open(path, 'rb') as file:
+            model_data = pickle.load(file)
+        end = timer()
+        return model_data, end - start
+
+    # TODO: refactor there
     start = timer()
     path = os.path.join(MODEL_DIR_PATH, 'resampled_clf_entropy.pkl')
     with open(path, 'rb') as fp:
