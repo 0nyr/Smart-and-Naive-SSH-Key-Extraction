@@ -39,7 +39,8 @@ class ConfigParameter:
         
         log_file_path = os.path.join(
             LOG_DIR_PATH, 
-            "Output_" + str(datetime.now()) + ".txt"
+            # log_2023_12_31_23_59_59.txt
+            "log_" + str(datetime.now().strftime("%Y_%m_%d_%H_%M_%S")) + ".txt"
         )
         self.log_file = open(log_file_path, "w")
     
@@ -678,7 +679,7 @@ def train_classifier(
     end = time.time()
     log('Time taken for reading and testing: %f' % (end - start))
 
-    path = os.path.join(RESULTS_PATH, "Test_Results_" + str(datetime.now()) + ".csv")
+    path = os.path.join(RESULTS_PATH, "test_results_" + str(datetime.now()) + ".csv")
     df.to_csv(path)
 
     start = time.time()
