@@ -1,10 +1,11 @@
 # Smart SSH Key Extractor
 
+Training and Testing Smart SSH Key Extractors.
 
-```shell
-apt-get install python3-venv
-python3 -m venv ./venv
-pip3 install scikit-learn
-pip3 install jupyter
-jupyter-notebook --ip=x.x.x.x
-```
+## Setup
+
+#### conda venv
+
+`conda create --name phdtrack-1 python=3.10`: create new conda venv.
+
+`pip install -r requirements.txt`: install packages in the `requirements.txt` file.

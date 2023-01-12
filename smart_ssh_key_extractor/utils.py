@@ -393,6 +393,14 @@ def read_key_files(path):
 
 
 def get_dataset_file_paths(path, deploy=False):
+    """
+    Gets the file paths of the dataset. 
+    If deploy is true, it will return all the files.
+    :param path: Path of the dataset
+    :param deploy: If true, it will return all the files
+    :return: List of file paths
+    """
+
     import glob
     paths = []
 
@@ -429,7 +437,11 @@ def get_dataset_file_paths(path, deploy=False):
 
 
 def get_metrics(y_true, y_pred, return_cm=False):
+    """
+    Obtain metrics from the true and predicted labels.
+    """
     from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+    
     acc = accuracy_score(y_true=y_true, y_pred=y_pred)
     pr = precision_score(y_true=y_true, y_pred=y_pred)
     recall = recall_score(y_true=y_true, y_pred=y_pred)
@@ -522,6 +534,9 @@ def print_metrics(y_test, y_pred):
 
 
 def get_splits(path, val_per=0.15, test_per=0.15, random_state=42):
+    """
+    Get the data splits for the dataset path.
+    """
     from sklearn.model_selection import train_test_split
     import time
 
@@ -546,8 +561,14 @@ def get_splits(path, val_per=0.15, test_per=0.15, random_state=42):
 
 
 def train_classifier(
-    dataset, labels, test_paths=[], test_keys=[], retrain_rf=False, retrain_resampled=False,
-                     retrain_final=False):
+    dataset, 
+    labels, 
+    test_paths=[], 
+    test_keys=[], 
+    retrain_rf=False, 
+    retrain_resampled=False,
+    retrain_final=False
+):
     """
     Trains the classifier and returns the wrapped classifier.
     Can also be used to retrain the classifier.
@@ -570,6 +591,8 @@ def train_classifier(
     from sklearn.ensemble import RandomForestClassifier
 
     path = os.path.join(MODEL_DIR_PATH, 'rf.pkl')
+
+    # retrain classifier if needed (asked or not present)
     if retrain_rf is True or not os.path.exists(path):
         start = time.time()
         rf = RandomForestClassifier(n_estimators=5)
@@ -668,56 +691,57 @@ def train_classifier(
 
 
 def load_models(load_high_recall_only=False):
-    import time
+    """
+    Load the models from the disk
+    :param load_high_recall_only: Whether to load only the high recall classifier or not.
+    """
+
     import pickle
 
     def __load_model_data(model_data_filename: str):
         """
-        Load the model data from the disk
+        Load the model data from the disk.
         :return: Model data
         """
         start = timer()
         path = os.path.join(MODEL_DIR_PATH, model_data_filename)
 
         # check if the file exists
-        if os.path.exists(path) is False:
-            raise FileNotFoundError('File %s not found' % path)
-            return None
+        if not os.path.exists(path):
+            raise FileNotFoundError('Model file %s not found' % path)
 
         with open(path, 'rb') as file:
             model_data = pickle.load(file)
         end = timer()
         return model_data, end - start
 
-    # TODO: refactor there
-    start = timer()
-    path = os.path.join(MODEL_DIR_PATH, 'resampled_clf_entropy.pkl')
-    with open(path, 'rb') as fp:
-        resampled_clf = pickle.load(fp)
-    end = timer()
-    log('Time taken for loading high recall classifier: %f' % (end - start))
+    
+    # Load the model data
+    resampled_clf, load_time = __load_model_data('resampled_clf_entropy.pkl')
+    log('Time taken for loading high recall classifier: %f' % load_time)
+
+    assert isinstance(resampled_clf, RandomForestClassifier), 'resampled_clf is not a RandomForestClassifier'
 
     if load_high_recall_only is True:
         return resampled_clf
     
-    start = timer()
-    path = os.path.join(MODEL_DIR_PATH, 'rf_entropy.pkl')
-    with open(path, 'rb') as fp:
-        rf = pickle.load(fp)
-    end = timer()
-    log('Time taken for loading high precision classifier: %f' % (end - start))
+    rf, load_time = __load_model_data('rf_entropy.pkl')
+    log('Time taken for loading high precision classifier: %f' % load_time)
 
-    start = timer()
-    path = os.path.join(MODEL_DIR_PATH, 'secondary_clf_entropy.pkl')
-    with open(path, 'rb') as fp:
-        final_clf = pickle.load(fp)
-    end = timer()
-    log('Time taken for loading secondary classifier: %f' % (end - start))
+    secondary_clf, load_time = __load_model_data('secondary_clf_entropy.pkl')
 
-    clf = WrappedClassifier(resampled_classifier=resampled_clf, classifier=rf, final_stage_classifier=final_clf)
+    clf = WrappedClassifier(
+        resampled_classifier=resampled_clf, 
+        classifier=rf, 
+        final_stage_classifier=secondary_clf
+    )
     return clf
 
+
 def check_path_exists(path: str):
+    """
+    Check if the path exists. Return True if it exists, False otherwise.
+    """
     if not os.path.exists(path):
         print('WARNING: Path does not exist: %s' % path)
         return False
