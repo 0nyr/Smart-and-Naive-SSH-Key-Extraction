@@ -243,7 +243,7 @@ def create_dataset(heap_dump_dir_path, keys_path):
     If the key for the file is present in the block then that page will be labelled True else False.
     This will be an imbalanced dataset.
 
-    :param folder_path: path of the heap dump (raw) files
+    :param heap_dump_dir_path: path of the heap dump (raw) files
     :param keys_path: path to the folder containing the corresponding keys of dumps
     :return: A big list of block data from all the files. Few of them will be labelled True and the rest False.
     """
@@ -259,7 +259,7 @@ def create_dataset(heap_dump_dir_path, keys_path):
         PARAMS.file_names.append(file_path)
 
         heap_dump_file_path = os.path.join(heap_dump_dir_path, file_path)
-        key_path = os.path.join(keys_path, file_path[:-9] + '-key.log')
+        key_path = os.path.join(keys_path, file_path[:-9] + '-key.log') # TODO: .log ???
         keys_in_file = read_keys(key_path)
         
         file_block_datas = get_data_from_keys_in_heap_dump(
