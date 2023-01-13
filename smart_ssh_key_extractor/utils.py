@@ -241,11 +241,11 @@ def create_dataset(heap_dump_dir_path, keys_path):
     """
     The aim is to split the raw file into multiple blocks of 128 bytes.
     If the key for the file is present in the block then that page will be labelled True else False.
-    This will be an unbalanced dataset.
+    This will be an imbalanced dataset.
 
-    :param folder_path: path of the heap dump files
+    :param folder_path: path of the heap dump (raw) files
     :param keys_path: path to the folder containing the corresponding keys of dumps
-    :return:
+    :return: A big list of block data from all the files. Few of them will be labelled True and the rest False.
     """
     file_paths = os.listdir(heap_dump_dir_path)
     all_block_datas: list[BlockData] = []
@@ -272,7 +272,7 @@ def create_dataset(heap_dump_dir_path, keys_path):
 
 def read_files(paths, key_paths, model=None, window_size=128, key_size=64, root_dir=None, oversample=False):
     """
-    Reads a list of files and their corresponding keys
+    Reads a list of files and their corresponding keys.
     :param paths: File paths as a list
     :param key_paths: Path of corresponding key files
     :param model: Doc2Vec model for concatenating the model to the block
