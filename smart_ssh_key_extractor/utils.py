@@ -4,270 +4,16 @@ File that contains all commonly used functions.
 
 import numpy as np
 import os
-import io
-import json
 from datetime import datetime
 from timeit import default_timer as timer
 from sklearn.ensemble import RandomForestClassifier
-from dataclasses import dataclass
-from enum import Enum
 
-ROOT_DIR_PATH = "../Smart-VMI/data/new" # TODO: ??? remove
-VALIDATION_DIR_PATH = os.environ["HOME"] + "/Documents/code/phdtrack/phdtrack_data/Validation"
+from constants import *
+from classes import *
+from log_custom import * 
 
-MODEL_DIR_PATH = "./models"
-LOG_DIR_PATH = "./logs"
-RESULTS_PATH = "./results"
-TYPES = ["client-side", "dropbear", "OpenSSH", "port-forwarding", "scp", "normal-shell"]
+from train_utils import read_keys_from_json
 
-LENGTHS = [16, 24, 32, 64]
-WINDOW_SIZE = 128
-KEY_SIZE = 64
-
-@dataclass
-class ConfigParameter:
-    file_names: list[str]
-    log_file: io.TextIOWrapper
-
-    def __init__(self):
-        self.file_names = []
-
-        # log file
-        if not os.path.exists(LOG_DIR_PATH):
-            # Create the directory if it is not present
-            os.makedirs(LOG_DIR_PATH)
-        
-        log_file_path = os.path.join(
-            LOG_DIR_PATH, 
-            # log_2023_12_31_23_59_59.txt
-            "log_" + str(datetime.now().strftime("%Y_%m_%d_%H_%M_%S")) + ".txt"
-        )
-        self.log_file = open(log_file_path, "w")
-    
-    def __del__(self):
-        """
-        Destructor to close the log file
-        """
-        self.log_file.close()
-
-class WrappedClassifier:
-    def __init__(self, 
-        resampled_classifier: RandomForestClassifier, 
-        classifier: RandomForestClassifier, 
-        final_stage_classifier: RandomForestClassifier
-    ):
-        self.resampled_classifier = resampled_classifier
-        self.classifier = classifier
-        self.final_stage = final_stage_classifier
-
-    def predict(self, x):
-        test_rc = self.resampled_classifier.predict_proba(x)
-        test_clf = self.classifier.predict_proba(x)
-
-        transformed_input = np.hstack((test_rc, test_clf))
-        results = self.final_stage.predict(transformed_input)
-        return results
-
-    def return_classifiers(self):
-        return self.classifier, self.resampled_classifier, self.final_stage
-
-
-PARAMS = ConfigParameter()
-
-def log(print_str):
-    """
-    Print to the console and log file.
-    """
-    PARAMS.log_file.write(
-        str(datetime.now()) + ":\t" + print_str + "\n"
-    )
-    print(str(datetime.now()) + ":\t" + print_str)
-
-
-def read_keys(path):
-    """
-    This function reads the keys from the key file.
-
-    Structure of the key file is as follows:
-    KEY 0:
-    00000000: 0000 0000 0000 0000 0000 0000 0000 0000  ................
-    00000010: 0000 0000 0000 0000 0000 0000 0000 0000  ................
-    00000020: 0000 0000 0000 0000 0000 0000 0000 0000  ................
-    KEY 1:
-    00000000: 0000 0000 0000 0000 0000 0000 0000 0000  ................
-    00000010: 0000 0000 0000 0000 0000 0000 0000 0000  ................
-    00000020: 0000 0000 0000 0000 0000 0000 0000 0000  ................
-    ...
-    """
-
-    with open(path, "r") as file:
-        data: list[str] = file.readlines()
-
-    # Extract upto 6 keys
-    keys: list[bytearray] = []
-    temp_key = bytearray()
-    for row in data:
-        curr_row = row.strip()
-        if len(curr_row) > 0: # not empty row
-            if 'KEY' in curr_row:
-                # key start
-                if len(temp_key) > 0:
-                    keys.append(temp_key)
-                temp_key = bytearray() # reset when changing key
-            else:
-                curr_row = curr_row[23:].strip()
-                temp_key = temp_key + bytearray.fromhex(curr_row)
-
-    if len(temp_key) > 0:
-        keys.append(temp_key)
-    return keys
-
-class BlockType(Enum):
-    INVALID = 0 # More than one key
-    VALID = 1 # One and only one key
-    EMPTY = 2 # No key
-
-@dataclass
-class BlockData:
-    dataset: bytearray
-    label: int # if VALID then 1 else EMPTY 0
-    offset: int
-    length: int
-
-def get_block_data_from_keys_in_dataset(
-    keys: list[bytearray], 
-    dataset: bytearray,
-):
-    """
-    This function checks if any of the keys are present in the dataset.
-    Return the block data which contains the dataset, label and offset.
-    It also specifies the type of the block depending on the number of keys in the block.
-    """
-
-    block_data = BlockData()
-    block_data.dataset = dataset
-    block_data_type = BlockType.VALID
-
-    # Check if any of the keys are present in the window
-    found: list[int] = []
-    for list_index in range(len(keys)):
-        if keys[list_index] in dataset:
-            found.append(list_index)
-        else:
-            found.append(0)
-
-    if len(found) > 0:
-        block_data.label = 1
-
-        # Find the offset of the key in the window
-        # NOTE: There can be multiple keys in the same window
-        all_offset_indexes = []
-        element = None
-        for element_index in found:
-            if element_index != 0:
-                element = keys[element_index]
-                current_offset = dataset.find(element)
-                all_offset_indexes.append(current_offset)
-
-        # If there are multiple keys in the same window 
-        # then we will ignore the sample
-        if len(all_offset_indexes) > 1:
-            print(
-                "WARN: Multiple keys detected in same "
-                "window. Ignoring sample."
-            )
-            block_data_type = BlockType.INVALID
-            block_data.label = 0
-            block_data.offset = 0
-            block_data.length = 0
-        else:
-            block_data_type = BlockType.VALID
-            block_data.offset = all_offset_indexes[0]
-            block_data.length = len(element)
-    else:
-        block_data_type = BlockType.EMPTY
-        block_data.label = 0
-        block_data.offset = 0
-        block_data.length = 0
-    
-    return block_data_type, block_data
-
-def get_data_from_keys_in_heap_dump(
-    heap_dump_file_path: str,
-    keys: list[bytearray]
-):
-    """
-    This function reads the heap dump file.
-    It creates 16 byte blocks and checks if 
-    any of the keys are present in the block.
-    NOTE: Only one key can be present in a block.
-
-    Returns: The block data.
-    """
-
-    block_datas :list[BlockData] = []
-    i = 0
-
-    with open(heap_dump_file_path, "rb") as file:
-        data = bytearray(file.read())
-        # We create 16 byte blocks
-
-        # iterate over key lengths
-        while i + WINDOW_SIZE <= len(data):
-            window_sum = sum(data[i:i+WINDOW_SIZE])
-
-            if window_sum != 0:
-                block_data_type, block_data = get_block_data_from_keys_in_dataset(
-                    keys, data[i:i+WINDOW_SIZE]
-                )
-                if block_data_type is not BlockType.INVALID:
-                    block_datas.append(block_data)
-            
-            i += KEY_SIZE
-        
-        # Check if there is any data left
-        window_sum = sum(data[-WINDOW_SIZE:])
-        # take into account the last bytes of the file
-        if i < len(data) and window_sum > 0:
-            block_data_type, block_data = get_block_data_from_keys_in_dataset(
-                keys, data[-WINDOW_SIZE:]
-            )
-            if block_data_type is not BlockType.INVALID:
-                block_datas.append(block_data)
-
-    return block_data
-
-def create_dataset(heap_dump_dir_path, keys_path):
-    """
-    The aim is to split the raw file into multiple blocks of 128 bytes.
-    If the key for the file is present in the block then that page will be labelled True else False.
-    This will be an imbalanced dataset.
-
-    :param heap_dump_dir_path: path of the heap dump (raw) files
-    :param keys_path: path to the folder containing the corresponding keys of dumps
-    :return: A big list of block data from all the files. Few of them will be labelled True and the rest False.
-    """
-    file_paths = os.listdir(heap_dump_dir_path)
-    all_block_datas: list[BlockData] = []
-
-    for file_path in file_paths:
-
-        if file_path in PARAMS.file_names:
-            print('WARNING: VALIDATION FILE OVERLAPS WITH TRAINING DATASET. \n %s' % file_path)
-            continue
-
-        PARAMS.file_names.append(file_path)
-
-        heap_dump_file_path = os.path.join(heap_dump_dir_path, file_path)
-        key_path = os.path.join(keys_path, file_path[:-9] + '-key.log') # TODO: .log ???
-        keys_in_file = read_keys(key_path)
-        
-        file_block_datas = get_data_from_keys_in_heap_dump(
-            heap_dump_file_path, keys_in_file
-        )
-        all_block_datas.extend(file_block_datas)
-
-    return all_block_datas
 
 
 def read_files(paths, key_paths, model=None, window_size=128, key_size=64, root_dir=None, oversample=False):
@@ -294,7 +40,7 @@ def read_files(paths, key_paths, model=None, window_size=128, key_size=64, root_
     for path, key_path in zip(paths, key_paths):
 
         assert (key_path[:-5] in path)
-        curr_keys = read_key_files(key_path)
+        curr_keys = read_keys_from_json(key_path)
         with open(path, "rb") as fp:
             data = fp.read()
             data = bytearray(data)
@@ -369,30 +115,6 @@ def read_files(paths, key_paths, model=None, window_size=128, key_size=64, root_
     return dataset, labels, offsets
 
 
-def read_key_files(path):
-    """
-    Reads the present keys with a JSON key file
-    :param path: path of the key file
-    :return: keys in a list
-    """
-    key_names = ['KEY_A', 'KEY_B', 'KEY_C', 'KEY_D', 'KEY_E', 'KEY_F']
-    keys = []
-    with open(path, "r") as fp:
-        data = json.loads(fp.read())
-
-    for key in key_names:
-
-        key_value = data.get(key, None)
-
-        # If the key is not found or key is empty
-        if key_value is None or len(key_value) == 0:
-            continue
-
-        keys.append(bytearray.fromhex(key_value))
-
-    return keys
-
-
 def get_dataset_file_paths(path, deploy=False):
     """
     Gets the file paths of the dataset. 
@@ -432,7 +154,7 @@ def get_dataset_file_paths(path, deploy=False):
                 file_paths.append(file)
 
             else:
-                log("Corresponding Key file does not exist for :%s" % file)
+                LOGGER.log("Corresponding Key file does not exist for :%s" % file)
 
     return file_paths, key_paths
 
@@ -527,11 +249,11 @@ def print_metrics(y_test, y_pred):
     Metrics are Accuracy, Precision, Recall, F1-Measure and Confusion Matrix.
     """
     acc, pr, recall, f1, cm = get_metrics(y_true=y_test, y_pred=y_pred, return_cm=True)
-    log("Accuracy: %f" % acc)
-    log("Precision: %f" % pr)
-    log("Recall: %f" % recall)
-    log("F1-Measure: %f" % f1)
-    log("\nConfusion Matrix:\n" + str(cm))
+    LOGGER.log("Accuracy: %f" % acc)
+    LOGGER.log("Precision: %f" % pr)
+    LOGGER.log("Recall: %f" % recall)
+    LOGGER.log("F1-Measure: %f" % f1)
+    LOGGER.log("\nConfusion Matrix:\n" + str(cm))
 
 
 def get_splits(path, val_per=0.15, test_per=0.15, random_state=42):
@@ -544,19 +266,19 @@ def get_splits(path, val_per=0.15, test_per=0.15, random_state=42):
     start = timer()
     file_paths, key_paths = get_dataset_file_paths(path)
     end = timer()
-    log('Time taken for finding all files: %f' % (end - start))
+    LOGGER.log('Time taken for finding all files: %f' % (end - start))
 
     start = timer()
     train_files, val_files, train_keys, val_keys, = \
         train_test_split(file_paths, key_paths, test_size=test_per, random_state=random_state)
     end = timer()
-    log('Time taken for splitting: %f' % (end - start))
+    LOGGER.log('Time taken for splitting: %f' % (end - start))
 
     start = timer()
     train_files, test_files, train_keys, test_keys, = \
         train_test_split(train_files, train_keys, test_size=val_per, random_state=random_state)
     end = timer()
-    log('Time taken for secondary splitting: %f' % (end - start))
+    LOGGER.log('Time taken for secondary splitting: %f' % (end - start))
 
     return train_files, train_keys, test_files, test_keys, val_files, val_keys
 
@@ -599,7 +321,7 @@ def train_classifier(
         rf = RandomForestClassifier(n_estimators=5)
         rf.fit(X=dataset, y=labels)
         end = time.time()
-        log('Time taken for training the classifier: %f' % (end - start))
+        LOGGER.log('Time taken for training the classifier: %f' % (end - start))
 
         with open(path, 'wb') as fp:
             pickle.dump(rf, fp)
@@ -615,14 +337,14 @@ def train_classifier(
         sm = SMOTE()
         x_train, y_train = sm.fit_resample(dataset, labels)
         end = time.time()
-        log('Time taken for resampling: %f' % (end - start))
+        LOGGER.log('Time taken for resampling: %f' % (end - start))
 
         #  clf.partial_fit(X=np.array(dataset).astype(int), y=labels, classes=classes)
         start = time.time()
         resampled_clf = RandomForestClassifier(n_estimators=5)
         resampled_clf.fit(X=np.array(x_train), y=y_train)
         end = time.time()
-        log('Time taken for training the classifier on resampled data: %f' % (end - start))
+        LOGGER.log('Time taken for training the classifier on resampled data: %f' % (end - start))
 
         # Clear memory of x_train and y_train
         x_train = None
@@ -642,12 +364,12 @@ def train_classifier(
         start = time.time()
         resampled_predicted = resampled_clf.predict_proba(dataset)
         end = time.time()
-        log('Time taken for predicting on the resampled classifier: %f' % (end - start))
+        LOGGER.log('Time taken for predicting on the resampled classifier: %f' % (end - start))
 
         start = time.time()
         non_resampled_predicted = rf.predict_proba(dataset)
         end = time.time()
-        log('Time taken for predicting on the random forest classifier: %f' % (end - start))
+        LOGGER.log('Time taken for predicting on the random forest classifier: %f' % (end - start))
 
         # Stack the probabilities together
         combined_dataset = np.hstack((resampled_predicted, non_resampled_predicted))
@@ -657,7 +379,7 @@ def train_classifier(
         final_clf = RandomForestClassifier(n_estimators=3)
         final_clf.fit(X=np.array(combined_dataset), y=labels)
         end = time.time()
-        log('Time taken for training the final classifier: %f' % (end - start))
+        LOGGER.log('Time taken for training the final classifier: %f' % (end - start))
 
         # Save the model to the disk
         path = os.path.join(MODEL_DIR_PATH, 'secondary_clf.pkl')
@@ -677,16 +399,16 @@ def train_classifier(
     start = time.time()
     y_test, y_pred, df = test(clf=clf, file_paths=test_paths, key_paths=test_keys)
     end = time.time()
-    log('Time taken for reading and testing: %f' % (end - start))
+    LOGGER.log('Time taken for reading and testing: %f' % (end - start))
 
     path = os.path.join(RESULTS_PATH, "test_results_" + str(datetime.now()) + ".csv")
     df.to_csv(path)
 
     start = time.time()
-    log('METRICS OF TEST SET')
+    LOGGER.log('METRICS OF TEST SET')
     print_metrics(y_test=y_test, y_pred=y_pred)
     end = time.time()
-    log('Time taken for computing metrics: %f' % (end - start))
+    LOGGER.log('Time taken for computing metrics: %f' % (end - start))
 
     return clf
 
@@ -719,7 +441,7 @@ def load_models(load_high_recall_only=False):
     
     # Load the model data
     resampled_clf, load_time = __load_model_data('resampled_clf_entropy.pkl')
-    log('Time taken for loading high recall classifier: %f' % load_time)
+    LOGGER.log('Time taken for loading high recall classifier: %f' % load_time)
 
     assert isinstance(resampled_clf, RandomForestClassifier), 'resampled_clf is not a RandomForestClassifier'
 
@@ -727,7 +449,7 @@ def load_models(load_high_recall_only=False):
         return resampled_clf
     
     rf, load_time = __load_model_data('rf_entropy.pkl')
-    log('Time taken for loading high precision classifier: %f' % load_time)
+    LOGGER.log('Time taken for loading high precision classifier: %f' % load_time)
 
     secondary_clf, load_time = __load_model_data('secondary_clf_entropy.pkl')
 
