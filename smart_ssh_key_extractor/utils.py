@@ -258,7 +258,7 @@ def print_metrics(y_test, y_pred):
 
 def get_splits(path, val_per=0.15, test_per=0.15, random_state=42):
     """
-    Get the data splits for the dataset path.
+    Get the data splits for the dataset path. 15% test, 15% validation and 70% training.
     """
     from sklearn.model_selection import train_test_split
     import time
