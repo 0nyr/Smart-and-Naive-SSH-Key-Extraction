@@ -254,6 +254,12 @@ def print_metrics(y_test, y_pred):
     LOGGER.log("Recall: %f" % recall)
     LOGGER.log("F1-Measure: %f" % f1)
     LOGGER.log("\nConfusion Matrix:\n" + str(cm))
+    LOGGER.log("Confusion Matrix: \n", cm)
+    LOGGER.log("True Positives: ", cm[1, 1])
+    LOGGER.log("True Negatives: ", cm[0, 0])
+    LOGGER.log("False Positives: ", cm[0, 1])
+    LOGGER.log("False Negatives: ", cm[1, 0])
+
 
 
 def get_splits(path, val_per=0.15, test_per=0.15, random_state=42):
