@@ -57,8 +57,8 @@ def read_files(paths, key_paths, model=None, window_size=128, key_size=64, root_
                     print(str(curr_key) + " not found in data file:" + path)
 
             enc_alg_info = path[base_path_length:].split(sep="/")[:-1]
-            assert (enc_alg_info[0] in TYPES)
-            assert (int(enc_alg_info[2]) in LENGTHS)
+            assert (enc_alg_info[-3] in TYPES)
+            assert (int(enc_alg_info[-1]) in LENGTHS)
 
             # We create 16 byte blocks
             while idx + window_size <= len(data):
@@ -209,9 +209,9 @@ def test(clf, file_paths, key_paths, window_size=128, model=None, root_dir=None)
     while idx < len(key_paths):
 
         enc_alg_info = file_paths[idx][base_path_length:].split(sep="/")[:-1]
-
-        assert (enc_alg_info[0] in TYPES)
-        assert (int(enc_alg_info[2]) in LENGTHS)
+        print(enc_alg_info)
+        assert (enc_alg_info[-3] in TYPES)
+        assert (int(enc_alg_info[-1]) in LENGTHS)
 
         path_idx = file_paths[idx].rfind("/")
         limit = 1
