@@ -12,7 +12,7 @@ from constants import *
 from classes import *
 from log_custom import * 
 
-from train_utils import read_keys_from_json
+from train_utils import read_keys_from_json, get_dataset_file_paths
 
 
 
@@ -113,50 +113,6 @@ def read_files(paths, key_paths, model=None, window_size=128, key_size=64, root_
                 offsets.append(0)
 
     return dataset, labels, offsets
-
-
-def get_dataset_file_paths(path, deploy=False):
-    """
-    Gets the file paths of the dataset. 
-    If deploy is true, it will return all the files.
-    :param path: Path of the dataset
-    :param deploy: If true, it will return all the files
-    :return: List of file paths
-    """
-
-    import glob
-    paths = []
-
-    file_paths = []
-    key_paths = []
-
-    sub_dir = os.walk(path)
-    for potential_dir in sub_dir:
-        # check if it is a directory
-        if os.path.isdir(potential_dir[0]):
-            paths.append(potential_dir[0])
-
-    paths = set(paths)
-    for path in paths:
-        # print(os.listdir(path))
-        files = glob.glob(os.path.join(path, '*.raw'), recursive=False)
-
-        if len(files) == 0:
-            continue
-
-        for file in files:
-            key_file = file.replace("-heap.raw", ".json")
-            if os.path.exists(key_file) and deploy is False:
-                file_paths.append(file)
-                key_paths.append(key_file)
-
-            elif deploy is True:
-                file_paths.append(file)
-
-            else:
-                LOGGER.log("Corresponding Key file does not exist for :%s" % file)
-
-    return file_paths, key_paths
 
 
 def get_metrics(y_true, y_pred, return_cm=False):

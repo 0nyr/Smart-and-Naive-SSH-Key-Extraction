@@ -109,10 +109,6 @@ def get_block_data_from_keys_in_dataset(
         # If there are multiple keys in the same window 
         # then we will ignore the sample
         if len(all_offset_indexes) > 1:
-            print(
-                "WARN: Multiple keys detected in same "
-                "window. Ignoring sample."
-            )
             block_data_type = BlockType.INVALID
             block_data.label = BlockType.INVALID.value
             block_data.offset = 0
@@ -179,6 +175,50 @@ def get_data_from_keys_in_heap_dump(
 
     return all_block_data_in_file, nb_invalid_blocks
 
+
+def get_dataset_file_paths(path, deploy=False):
+    """
+    Gets the file paths of the dataset. 
+    If deploy is false, it will also return all the key files.
+    :param path: Path of the dataset
+    :param deploy: If false, it will also return the key files.
+    :return: List of file paths
+    """
+
+    import glob
+    paths = []
+
+    file_paths = []
+    key_paths = []
+
+    sub_dir = os.walk(path)
+    for potential_dir in sub_dir:
+        # check if it is a directory
+        if os.path.isdir(potential_dir[0]):
+            paths.append(potential_dir[0])
+
+    paths = set(paths)
+    for path in paths:
+        files = glob.glob(os.path.join(path, '*.raw'), recursive=False)
+
+        if len(files) == 0:
+            continue
+
+        for file in files:
+            key_file = file.replace("-heap.raw", ".json")
+            if os.path.exists(key_file) and deploy is False:
+                file_paths.append(file)
+                key_paths.append(key_file)
+
+            elif deploy is True:
+                file_paths.append(file)
+
+            else:
+                LOGGER.log("Corresponding Key file does not exist for :%s" % file)
+
+    return file_paths, key_paths
+
+
 def create_dataset(heap_dump_dir_path):
     """
     The aim is to split the raw file into multiple blocks of 128 bytes.
@@ -189,7 +229,12 @@ def create_dataset(heap_dump_dir_path):
     :return: A big list of block data from all the files. Few of them will be labelled True and the rest False.
     :return: Total number of invalid blocks. These blocks have been ignored.
     """
-    file_paths = os.listdir(heap_dump_dir_path)
+    # get all the .raw files from subdirectories
+    file_paths, _ = get_dataset_file_paths(heap_dump_dir_path)
+    file_paths = set(file_paths) # remove duplicates
+    print("Number of .raw files to load: %d" % len(file_paths))
+
+    # generate the list of block data
     all_block_datas: list[BlockData] = []
     nb_all_invalid_blocks = 0
 
@@ -198,18 +243,16 @@ def create_dataset(heap_dump_dir_path):
         if file_path in LOGGER.file_names:
             print('WARNING: VALIDATION FILE OVERLAPS WITH TRAINING DATASET. \n %s' % file_path)
             continue
+    
+        assert(file_path.endswith("-heap.raw"))
 
         LOGGER.file_names.append(file_path)
 
-        heap_dump_file_path = os.path.join(heap_dump_dir_path, file_path)
-        json_key_file_path = os.path.join(
-            heap_dump_dir_path, 
-            file_path.replace("-heap.raw", ".json")
-        )
+        json_key_file_path = file_path.replace("-heap.raw", ".json")
         keys_in_file = read_keys_from_json(json_key_file_path)
         
         file_block_datas, nb_invalid_blocks = get_data_from_keys_in_heap_dump(
-            heap_dump_file_path, keys_in_file
+            file_path, keys_in_file
         )
         all_block_datas.extend(file_block_datas)
         nb_all_invalid_blocks += nb_invalid_blocks
